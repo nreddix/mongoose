@@ -1,179 +1,74 @@
-var express = require("express");
-var bodyParser = require("body-parser");
-var logger = require("morgan");
-var mongoose = require("mongoose");
-var path = require("path");
+const express = require("express");
+const mongoose = require("mongoose");
+const cheerio = require("cheerio");
+const axios = require("axios");
+const app = express();
 
-var Note = require("./models/Note.js");
-var Article = require("./models/Article.js");
-
-var request = require("request");
-var cheerio = require("cheerio");
-
-mongoose.Promise = Promise;
-
-var port = process.env.PORT || 3000
-
-var app = express();
-
-app.use(logger("dev"));
-app.use(bodyParser.urlencoded({
-  extended: false
-}));
-
+// Parse request body as JSON
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 app.use(express.static("public"));
 
-var exphbs = require("express-handlebars");
+const PORT = process.env.PORT || 3030;
 
-app.engine("handlebars", exphbs({
-    defaultLayout: "main",
-    partialsDir: path.join(__dirname, "/views/layouts/partials/notes-modal.handlebars")
-}));
-app.set("view engine", "handlebars");
+var MONGODB_URI =
+  process.env.MONGODB_URI || "mongodb://localhost/mongoHeadlines";
 
-mongoose.connect("mongodb://heroku_jmv816f9:5j1nd4taq42hi29bfm5hobeujd@ds133192.mlab.com:33192/heroku_jmv816f9");
-//mongoose.connect("mongodb://localhost/mongoscraper");
-var db = mongoose.connection;
+mongoose.connect(
+  MONGODB_URI,
+  {
+    useCreateIndex: true,
+    useNewUrlParser: true
+  },
+  function(err) {
+    if (err) {
+      console.log(err);
+    }
+  }
+);
 
-db.on("error", function(error) {
-  console.log("Mongoose Error: ", error);
-});
-
-db.once("open", function() {
-  console.log("Mongoose connection successful.");
+app.get("/", function(req, res) {
+  res.sendFile(path.resolve(__dirname + "public/index.html"));
 });
 
 app.get("/scrape", function(req, res) {
-  request("https://www.nytimes.com/", function(error, response, html) {
-    var $ = cheerio.load(html);
-    $("article").each(function(i, element) {
+  let response;
+  const url = "https://www.npr.org/sections/news/";
 
-      var result = {};
+  axios
+    .get(url)
+    .then(function(response) {
+      //   we're loading the data from the response that's given to us by using cheerio
+      var $ = cheerio.load(response.data);
 
-      summary = ""
-      if ($(this).find("ul").length) {
-        summary = $(this).find("li").first().text();
-      } else {
-        summary = $(this).find("p").text();
-      };
+      //   console.log(response.data);
+      $("article.item").each(function(i, art) {
+        let article = {};
 
-      result.title = $(this).find("h2").text();
-      result.summary = summary;
-      result.link = "https://www.nytimes.com" + $(this).find("a").attr("href");
+        article.title = $(this)
+          .find("h2.title")
+          .text();
 
-      var entry = new Article(result);
+        article.teaser = $(this)
+          .find("p.teaser")
+          .text();
 
-      entry.save(function(err, doc) {
-        if (err) {
-          console.log(err);
-        }
-        else {
-          console.log(doc);
-        }
+        // trying to find Image, does not work
+        // article.image = $(this)
+        //   .find("img.respArchListImg")
+        //   .text();
+
+        console.log(article);
       });
 
+      res.sendStatus(200);
+    })
+    .catch(function(error) {
+      console.log(error);
+      // do something
+      res.sendStatus(500);
     });
-       res.send("Scrape Complete");
-
-  });
 });
-
-app.get("/articles", function(req, res) {
-  Article.find({}, function(error, doc) {
-    if (error) {
-      console.log(error);
-    }
-    else {
-      res.json(doc);
-    }
-  });
-});
-
-app.get("/articles/:id", function(req, res) {
-  Article.findOne({ "_id": req.params.id })
-  .populate("note")
-  .exec(function(error, doc) {
-    if (error) {
-      console.log(error);
-    }
-    else {
-      res.json(doc);
-    }
-  });
-});
-
-
-app.post("/articles/save/:id", function(req, res) {
-      Article.findOneAndUpdate({ "_id": req.params.id }, { "saved": true})
-      .exec(function(err, doc) {
-        if (err) {
-          console.log(err);
-        }
-        else {
-          res.send(doc);
-        }
-      });
-});
-
-app.post("/articles/delete/:id", function(req, res) {
-      Article.findOneAndUpdate({ "_id": req.params.id }, {"saved": false, "notes": []})
-      .exec(function(err, doc) {
-        if (err) {
-          console.log(err);
-        }
-        else {
-          res.send(doc);
-        }
-      });
-});
-
-
-app.post("/notes/save/:id", function(req, res) {
-  var newNote = new Note({
-    body: req.body.text,
-    article: req.params.id
-  });
-  console.log(req.body)
-  newNote.save(function(error, note) {
-    if (error) {
-      console.log(error);
-    }
-    else {
-      Article.findOneAndUpdate({ "_id": req.params.id }, {$push: { "notes": note } })
-      .exec(function(err) {
-        if (err) {
-          console.log(err);
-          res.send(err);
-        }
-        else {
-          res.send(note);
-        }
-      });
-    }
-  });
-});
-
-app.delete("/notes/delete/:note_id/:article_id", function(req, res) {
-  Note.findOneAndRemove({ "_id": req.params.note_id }, function(err) {
-    if (err) {
-      console.log(err);
-      res.send(err);
-    }
-    else {
-      Article.findOneAndUpdate({ "_id": req.params.article_id }, {$pull: {"notes": req.params.note_id}})
-        .exec(function(err) {
-          if (err) {
-            console.log(err);
-            res.send(err);
-          }
-          else {
-            res.send("Note Deleted");
-          }
-        });
-    }
-  });
-});
-
-app.listen(port, function() {
-  console.log("App running on port " + port);
+app.listen(PORT, function() {
+  console.log("started on " + PORT);
 });
